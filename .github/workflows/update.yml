@@ -1,0 +1,36 @@
+# ClamAV signature mirror for a server that cannot reach the ClamAV CDN (crm-ops/clamav/README.md, option A).
+# Every 4 h a GitHub runner fetches the databases with cvdupdate (incl. the .cvd.sign files ClamAV 1.5 checks)
+# and publishes them on GitHub Pages. freshclam on the server: PrivateMirror https://<owner>.github.io/clamav-db
+name: update
+on:
+  schedule: [{ cron: '17 */4 * * *' }]
+  workflow_dispatch:
+permissions: { contents: read, pages: write, id-token: write }
+concurrency: { group: pages, cancel-in-progress: false }
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: '${{ steps.deploy.outputs.page_url }}' }
+    steps:
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install --quiet cvdupdate
+      # keep the databases between runs: only changed files are downloaded (the CDN rate-limits full re-downloads)
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cvdupdate
+          key: cvd-${{ github.run_id }}
+          restore-keys: cvd-
+      - run: |
+          cvd config set --dbdir ~/.cvdupdate/database
+          cvd update
+          mkdir -p _site && cp -a ~/.cvdupdate/database/. _site/
+          ls -la _site
+          for f in main daily bytecode; do test -s _site/$f.cvd; done
+          ls _site/*.sign >/dev/null
+          date -u +%FT%TZ > _site/updated.txt
+          { echo '<!doctype html><title>clamav-db</title><pre>'; ls -l _site; echo '</pre>'; } > _site/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: _site }
+      - id: deploy
+        uses: actions/deploy-pages@v4
